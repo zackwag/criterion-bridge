@@ -130,8 +130,8 @@ func (f *fakeCriterion) handler() http.Handler {
 	})
 	mux.HandleFunc("GET /api/media/1emmgvqX", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"title":"Criterion 24/7","schedule":[
- {"startTime":"2026-11-25T11:00:00Z","endTime":"2026-11-25T11:06:31Z","title":"A Short & Sharp Film","shortDescription":"Film","longDescription":"One \"quoted\" line.","programType":"Movie","genres":["Movies"],"ratings":[{"body":"US","code":"NR"}]},
- {"startTime":"2026-11-25T11:06:31Z","endTime":"2026-11-25T12:42:25Z","title":"Tótem","shortDescription":"Film","programType":"Movie","genres":["Movies","Drama"],"ratings":[]},
+ {"startTime":"2026-11-25T11:00:00Z","endTime":"2026-11-25T11:06:31Z","title":"A Short & Sharp Film","shortDescription":"Film","longDescription":"One \"quoted\" line.","programType":"Movie","mediaid":"805MwiYh","genres":["Movies"],"ratings":[{"body":"US","code":"NR"}]},
+ {"startTime":"2026-11-25T11:06:31Z","endTime":"2026-11-25T12:42:25Z","title":"Tótem","shortDescription":"Film","programType":"Movie","mediaid":"../evil","genres":["Movies","Drama"],"ratings":[]},
  {"startTime":"2026-11-25T12:42:25Z","endTime":"2026-11-25T12:42:25Z","title":"Zero length","programType":"Movie"}
 ]}`)
 	})
@@ -299,6 +299,15 @@ func TestPlaylistAndGuide(t *testing.T) {
 	}
 	if strings.Join(first.Categories, ",") != "Movie,Movies" || len(first.Ratings) != 1 || first.Ratings[0].Value != "NR" {
 		t.Errorf("first programme categories/ratings = %v / %v", first.Categories, first.Ratings)
+	}
+	if first.Icon == nil || first.Icon.Src != "https://cdn.jwplayer.com/v2/media/805MwiYh/poster.jpg?width=1280" {
+		t.Errorf("first programme icon = %+v, want the film's JW Player poster", first.Icon)
+	}
+	if !strings.Contains(string(b), "</category>\n  <icon ") || !strings.Contains(string(b), "</icon>\n  <rating ") {
+		t.Errorf("icon should come between category and rating, as XMLTV orders them:\n%s", b)
+	}
+	if tv.Programmes[1].Icon != nil {
+		t.Errorf("an entry with a malformed media ID got an icon: %+v", tv.Programmes[1].Icon)
 	}
 	if second := tv.Programmes[1]; second.Desc != "Film" || strings.Join(second.Categories, ",") != "Movie,Movies,Drama" {
 		t.Errorf("second programme desc/categories = %q / %v, want the short description and deduped categories", second.Desc, second.Categories)

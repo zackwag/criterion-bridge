@@ -27,12 +27,16 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
+
+// mediaIDPattern matches a JW Player media ID, which goes into an image URL.
+var mediaIDPattern = regexp.MustCompile(`^[A-Za-z0-9]{1,32}$`)
 
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
@@ -167,6 +171,7 @@ type scheduleEntry struct {
 	ShortDescription string    `json:"shortDescription"`
 	LongDescription  string    `json:"longDescription"`
 	ProgramType      string    `json:"programType"`
+	MediaID          string    `json:"mediaid"` // the film's own JW Player media ID
 	Genres           []string  `json:"genres"`
 	Ratings          []struct {
 		Body string `json:"body"`
@@ -189,6 +194,10 @@ func (g *guide) fetch(ctx context.Context) ([]byte, error) {
 	return xmltv(body.Schedule)
 }
 
+type xmltvIcon struct {
+	Src string `xml:"src,attr"`
+}
+
 type xmltvRating struct {
 	System string `xml:"system,attr"`
 	Value  string `xml:"value"`
@@ -201,25 +210,23 @@ type xmltvProgramme struct {
 	Title      string        `xml:"title"`
 	Desc       string        `xml:"desc,omitempty"`
 	Categories []string      `xml:"category"`
+	Icon       *xmltvIcon    `xml:"icon"` // XMLTV puts icon after category and before rating
 	Ratings    []xmltvRating `xml:"rating"`
 }
 
 func xmltv(schedule []scheduleEntry) ([]byte, error) {
 	const stamp = "20060102150405 -0700"
-	type icon struct {
-		Src string `xml:"src,attr"`
-	}
 	doc := struct {
 		XMLName   xml.Name `xml:"tv"`
 		Generator string   `xml:"generator-info-name,attr"`
 		Channel   struct {
-			ID   string `xml:"id,attr"`
-			Name string `xml:"display-name"`
-			Icon icon   `xml:"icon"`
+			ID   string    `xml:"id,attr"`
+			Name string    `xml:"display-name"`
+			Icon xmltvIcon `xml:"icon"`
 		} `xml:"channel"`
 		Programmes []xmltvProgramme `xml:"programme"`
 	}{Generator: "criterion-bridge"}
-	doc.Channel.ID, doc.Channel.Name, doc.Channel.Icon = channelID, channelName, icon{channelLogo}
+	doc.Channel.ID, doc.Channel.Name, doc.Channel.Icon = channelID, channelName, xmltvIcon{channelLogo}
 
 	for _, e := range schedule {
 		if e.Title == "" || !e.EndTime.After(e.StartTime) {
@@ -231,6 +238,11 @@ func xmltv(schedule []scheduleEntry) ([]byte, error) {
 			Channel: channelID,
 			Title:   e.Title,
 			Desc:    or(e.LongDescription, e.ShortDescription),
+		}
+		// Each film's artwork is its JW Player poster: Criterion's title card
+		// with a still, the director, title and year.
+		if mediaIDPattern.MatchString(e.MediaID) {
+			p.Icon = &xmltvIcon{"https://cdn.jwplayer.com/v2/media/" + e.MediaID + "/poster.jpg?width=1280"}
 		}
 		// Channels DVR treats a "Movie" category as a film.
 		for _, c := range append([]string{e.ProgramType}, e.Genres...) {
