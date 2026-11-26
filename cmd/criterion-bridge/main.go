@@ -38,6 +38,9 @@ import (
 // mediaIDPattern matches a JW Player media ID, which goes into an image URL.
 var mediaIDPattern = regexp.MustCompile(`^[A-Za-z0-9]{1,32}$`)
 
+// yearPattern matches a release date that starts with a plausible year.
+var yearPattern = regexp.MustCompile(`^(18|19|20)[0-9]{2}`)
+
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
@@ -50,6 +53,7 @@ const (
 	// channelLogo is criterionchannel.com's own square icon, the Criterion
 	// "C". The stream's JW Player poster is only a generic film-strip image.
 	channelLogo = criterionURL + "/apple-icon.png"
+	jwPlayerURL = "https://cdn.jwplayer.com"
 	// guideFor is how long a fetched schedule is reused.
 	guideFor = time.Hour
 )
@@ -74,7 +78,7 @@ func run(logger *slog.Logger) error {
 	listenAddr := or(os.Getenv("LISTEN_ADDR"), ":8080")
 
 	c := &client{baseURL: criterionURL, email: email, password: password, logger: logger}
-	g := &guide{http: &http.Client{Timeout: 30 * time.Second}, baseURL: criterionURL}
+	g := &guide{http: &http.Client{Timeout: 30 * time.Second}, baseURL: criterionURL, jwURL: jwPlayerURL}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -141,10 +145,12 @@ func handler(c *client, g *guide, logger *slog.Logger) http.Handler {
 type guide struct {
 	http    *http.Client
 	baseURL string
+	jwURL   string // JW Player's media API, which has each film's release date
 
 	mu      sync.Mutex
 	fetched time.Time
 	xml     []byte
+	years   map[string]string // release year by media ID; "" when a film has none
 }
 
 // get returns the XMLTV guide, refetching Criterion's schedule every
@@ -191,7 +197,58 @@ func (g *guide) fetch(ctx context.Context) ([]byte, error) {
 	if len(body.Schedule) == 0 {
 		return nil, errors.New("criterion's schedule was empty")
 	}
-	return xmltv(body.Schedule)
+	return xmltv(body.Schedule, g.releaseYears(ctx, body.Schedule))
+}
+
+// releaseYears looks up each scheduled film's release year in JW Player's
+// public metadata, a few at a time. A film's year doesn't change, so each is
+// looked up once and kept while the film stays on the schedule. A failed
+// lookup leaves that film without a year and is retried next refresh.
+func (g *guide) releaseYears(ctx context.Context, schedule []scheduleEntry) map[string]string {
+	years := map[string]string{}
+	var missing []string
+	for _, e := range schedule {
+		if _, seen := years[e.MediaID]; seen || !mediaIDPattern.MatchString(e.MediaID) {
+			continue
+		}
+		if y, ok := g.years[e.MediaID]; ok {
+			years[e.MediaID] = y
+		} else {
+			years[e.MediaID] = ""
+			missing = append(missing, e.MediaID)
+		}
+	}
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, 8)
+	for _, id := range missing {
+		wg.Go(func() {
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			var body struct {
+				Playlist []struct {
+					ReleaseDate string `json:"release_date"`
+				} `json:"playlist"`
+			}
+			if _, err := doJSON(ctx, g.http, http.MethodGet, g.jwURL+"/v2/media/"+id, nil, nil, &body); err != nil {
+				mu.Lock()
+				delete(years, id) // not cached, so it's tried again
+				mu.Unlock()
+				return
+			}
+			y := ""
+			if len(body.Playlist) > 0 && yearPattern.MatchString(body.Playlist[0].ReleaseDate) {
+				y = body.Playlist[0].ReleaseDate[:4]
+			}
+			mu.Lock()
+			years[id] = y
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	g.years = years
+	return years
 }
 
 type xmltvIcon struct {
@@ -209,12 +266,13 @@ type xmltvProgramme struct {
 	Channel    string        `xml:"channel,attr"`
 	Title      string        `xml:"title"`
 	Desc       string        `xml:"desc,omitempty"`
+	Date       string        `xml:"date,omitempty"` // release year; Channels shows it instead of the air date
 	Categories []string      `xml:"category"`
 	Icon       *xmltvIcon    `xml:"icon"` // XMLTV puts icon after category and before rating
 	Ratings    []xmltvRating `xml:"rating"`
 }
 
-func xmltv(schedule []scheduleEntry) ([]byte, error) {
+func xmltv(schedule []scheduleEntry, years map[string]string) ([]byte, error) {
 	const stamp = "20060102150405 -0700"
 	doc := struct {
 		XMLName   xml.Name `xml:"tv"`
@@ -238,15 +296,17 @@ func xmltv(schedule []scheduleEntry) ([]byte, error) {
 			Channel: channelID,
 			Title:   e.Title,
 			Desc:    or(e.LongDescription, e.ShortDescription),
+			Date:    years[e.MediaID],
 		}
 		// Each film's artwork is its JW Player poster: Criterion's title card
 		// with a still, the director, title and year.
 		if mediaIDPattern.MatchString(e.MediaID) {
-			p.Icon = &xmltvIcon{"https://cdn.jwplayer.com/v2/media/" + e.MediaID + "/poster.jpg?width=1280"}
+			p.Icon = &xmltvIcon{jwPlayerURL + "/v2/media/" + e.MediaID + "/poster.jpg?width=1280"}
 		}
-		// Channels DVR treats a "Movie" category as a film.
+		// Channels DVR treats a "Movie" category as a film. Criterion's
+		// matching "Movies" genre only repeats it, so it's left out.
 		for _, c := range append([]string{e.ProgramType}, e.Genres...) {
-			if c != "" && !slices.Contains(p.Categories, c) {
+			if c != "" && !slices.Contains(p.Categories, c) && !strings.EqualFold(c, e.ProgramType+"s") {
 				p.Categories = append(p.Categories, c)
 			}
 		}
