@@ -43,7 +43,9 @@ const (
 	mediaID     = "1emmgvqX"
 	channelID   = "criterion-24-7"
 	channelName = "Criterion 24/7"
-	channelLogo = "https://cdn.jwplayer.com/v2/media/" + mediaID + "/poster.jpg?width=720"
+	// channelLogo is criterionchannel.com's own square icon, the Criterion
+	// "C". The stream's JW Player poster is only a generic film-strip image.
+	channelLogo = criterionURL + "/apple-icon.png"
 	// guideFor is how long a fetched schedule is reused.
 	guideFor = time.Hour
 )
