@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/zackwag/criterion-bridge/compare/v0.1.1...v0.2.0) (2026-11-26)
+
+
+### Features
+
+* add each film's artwork to the guide ([#7](https://github.com/zackwag/criterion-bridge/issues/7)) ([4d709b9](https://github.com/zackwag/criterion-bridge/commit/4d709b96898f4c54263a102ce6fcfa85e61ea973))
+
 ## [0.1.1](https://github.com/zackwag/criterion-bridge/compare/v0.1.0...v0.1.1) (2026-11-26)
 
 
