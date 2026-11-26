@@ -1,7 +1,6 @@
 services:
   criterion-bridge:
-    # Built from this repo; the image isn't published anywhere.
-    build: .
+    image: zackwag/criterion-bridge:latest
     container_name: criterion-bridge
     restart: unless-stopped
     ports:
