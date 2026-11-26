@@ -79,7 +79,7 @@ func (f *fakeCriterion) handler() http.Handler {
 	mux.HandleFunc("POST /forms/api/forms/ap_test/validations/{step}", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"effect":{"type":"SUBMIT_FORM","checkpoint":"ajc_test"}}`)
 	})
-	mux.HandleFunc("POST /forms/api/forms/ap_test/submissions/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /forms/api/forms/ap_test/submissions/", func(_ http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
