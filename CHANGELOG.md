@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/zackwag/criterion-bridge/compare/v0.1.0...v0.1.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* send the post-login form's signed checkpoints ([#5](https://github.com/zackwag/criterion-bridge/issues/5)) ([8d01310](https://github.com/zackwag/criterion-bridge/commit/8d01310f9936a54eca5cd59772165e5e91aad9c6))
+
 ## 0.1.0 (2026-11-26)
 
 
