@@ -36,6 +36,7 @@ Keep `.env` private. It's gitignored, and the bridge never logs your email or pa
 1. Go to **Settings** > **Custom Channels** > **Add Source** > **M3U Playlist**.
 1. Set the stream format to **HLS** and the URL to `http://<host>:8080/playlist.m3u`.
 1. Set **XMLTV Guide Data** to `http://<host>:8080/guide.xml`.
+1. Leave **Prefer channel logos from M3U** selected, so the channel shows Criterion's logo.
 
 The guide covers the next several days of films, with descriptions, genres and ratings, so you can browse and record by film.
 
