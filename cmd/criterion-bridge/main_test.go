@@ -24,6 +24,7 @@ type fakeCriterion struct {
 	noForm     bool   // no post-login form at all
 
 	mu          sync.Mutex
+	jwLookups   map[string]int // JW Player media lookups by ID
 	passwordHit int
 	signIns     int
 	submissions []map[string]any
@@ -128,11 +129,29 @@ func (f *fakeCriterion) handler() http.Handler {
 		}
 		_, _ = io.WriteString(w, `{"playlist":[{"mediaid":"1emmgvqX","sources":[{"file":"https://stream.example/live/index.mpd","type":"application/dash+xml"},{"file":"`+fakeStream+`","type":"application/vnd.apple.mpegurl"}]}]}`)
 	})
+	// JW Player's media API: one film has a release date, one fails.
+	mux.HandleFunc("GET /v2/media/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		f.mu.Lock()
+		if f.jwLookups == nil {
+			f.jwLookups = map[string]int{}
+		}
+		f.jwLookups[id]++
+		f.mu.Unlock()
+		switch id {
+		case "805MwiYh":
+			_, _ = io.WriteString(w, `{"playlist":[{"mediaid":"805MwiYh","release_date":"1972-12-30"}]}`)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	})
 	mux.HandleFunc("GET /api/media/1emmgvqX", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"title":"Criterion 24/7","schedule":[
  {"startTime":"2026-11-25T11:00:00Z","endTime":"2026-11-25T11:06:31Z","title":"A Short & Sharp Film","shortDescription":"Film","longDescription":"One \"quoted\" line.","programType":"Movie","mediaid":"805MwiYh","genres":["Movies"],"ratings":[{"body":"US","code":"NR"}]},
  {"startTime":"2026-11-25T11:06:31Z","endTime":"2026-11-25T12:42:25Z","title":"Tótem","shortDescription":"Film","programType":"Movie","mediaid":"../evil","genres":["Movies","Drama"],"ratings":[]},
- {"startTime":"2026-11-25T12:42:25Z","endTime":"2026-11-25T12:42:25Z","title":"Zero length","programType":"Movie"}
+ {"startTime":"2026-11-25T12:42:25Z","endTime":"2026-11-25T12:42:25Z","title":"Zero length","programType":"Movie"},
+ {"startTime":"2026-11-25T12:42:25Z","endTime":"2026-11-25T14:00:00Z","title":"No Metadata","programType":"Movie","mediaid":"gone0001"},
+ {"startTime":"2026-11-25T14:00:00Z","endTime":"2026-11-25T15:30:00Z","title":"A Short & Sharp Film","programType":"Movie","mediaid":"805MwiYh"}
 ]}`)
 	})
 	return mux
@@ -143,7 +162,7 @@ func newBridge(t *testing.T, f *fakeCriterion, password string) (*fakeCriterion,
 	upstream := httptest.NewServer(f.handler())
 	t.Cleanup(upstream.Close)
 	c := &client{baseURL: upstream.URL, email: "me@example.com", password: password, logger: slog.New(slog.DiscardHandler)}
-	g := &guide{http: upstream.Client(), baseURL: upstream.URL}
+	g := &guide{http: upstream.Client(), baseURL: upstream.URL, jwURL: upstream.URL}
 	srv := httptest.NewServer(handler(c, g, slog.New(slog.DiscardHandler)))
 	t.Cleanup(srv.Close)
 	return f, c, srv
@@ -287,8 +306,8 @@ func TestPlaylistAndGuide(t *testing.T) {
 	if err := xml.Unmarshal(b, &tv); err != nil {
 		t.Fatalf("guide isn't valid XML: %v\n%s", err, b)
 	}
-	if tv.Channel.ID != channelID || len(tv.Programmes) != 2 {
-		t.Fatalf("guide has channel %q and %d programmes, want %q and 2 (the zero-length one dropped):\n%s", tv.Channel.ID, len(tv.Programmes), channelID, b)
+	if tv.Channel.ID != channelID || len(tv.Programmes) != 4 {
+		t.Fatalf("guide has channel %q and %d programmes, want %q and 4 (the zero-length one dropped):\n%s", tv.Channel.ID, len(tv.Programmes), channelID, b)
 	}
 	first := tv.Programmes[0]
 	if first.Start != "20261125110000 +0000" || first.Stop != "20261125110631 +0000" || first.Channel != channelID {
@@ -297,7 +316,10 @@ func TestPlaylistAndGuide(t *testing.T) {
 	if first.Title != "A Short & Sharp Film" || first.Desc != `One "quoted" line.` {
 		t.Errorf("first programme title/desc = %q / %q", first.Title, first.Desc)
 	}
-	if strings.Join(first.Categories, ",") != "Movie,Movies" || len(first.Ratings) != 1 || first.Ratings[0].Value != "NR" {
+	if first.Date != "1972" {
+		t.Errorf("first programme date = %q, want the release year 1972", first.Date)
+	}
+	if strings.Join(first.Categories, ",") != "Movie" || len(first.Ratings) != 1 || first.Ratings[0].Value != "NR" {
 		t.Errorf("first programme categories/ratings = %v / %v", first.Categories, first.Ratings)
 	}
 	if first.Icon == nil || first.Icon.Src != "https://cdn.jwplayer.com/v2/media/805MwiYh/poster.jpg?width=1280" {
@@ -309,7 +331,37 @@ func TestPlaylistAndGuide(t *testing.T) {
 	if tv.Programmes[1].Icon != nil {
 		t.Errorf("an entry with a malformed media ID got an icon: %+v", tv.Programmes[1].Icon)
 	}
-	if second := tv.Programmes[1]; second.Desc != "Film" || strings.Join(second.Categories, ",") != "Movie,Movies,Drama" {
-		t.Errorf("second programme desc/categories = %q / %v, want the short description and deduped categories", second.Desc, second.Categories)
+	if second := tv.Programmes[1]; second.Desc != "Film" || strings.Join(second.Categories, ",") != "Movie,Drama" || second.Date != "" {
+		t.Errorf("second programme desc/categories/date = %q / %v / %q, want the short description, Movie,Drama and no year for a malformed media ID", second.Desc, second.Categories, second.Date)
+	}
+}
+
+func TestReleaseYearsAreCachedAndFailuresRetried(t *testing.T) {
+	f := &fakeCriterion{password: "right"}
+	upstream := httptest.NewServer(f.handler())
+	t.Cleanup(upstream.Close)
+	g := &guide{http: upstream.Client(), baseURL: upstream.URL, jwURL: upstream.URL}
+
+	for range 2 {
+		g.fetched = time.Time{} // force a refetch
+		b, err := g.get(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "<date>1972</date>") {
+			t.Fatalf("guide is missing the release year:\n%s", b)
+		}
+		if !strings.Contains(string(b), "<title>No Metadata</title>") {
+			t.Fatalf("a failed metadata lookup dropped its programme:\n%s", b)
+		}
+	}
+	if n := f.jwLookups["805MwiYh"]; n != 1 {
+		t.Errorf("805MwiYh was looked up %d times across two refreshes, want 1 (cached)", n)
+	}
+	if n := f.jwLookups["gone0001"]; n != 2 {
+		t.Errorf("gone0001 was looked up %d times across two refreshes, want 2 (a failure isn't cached)", n)
+	}
+	if n := f.jwLookups["../evil"]; n != 0 {
+		t.Errorf("a malformed media ID was looked up %d times, want 0", n)
 	}
 }
