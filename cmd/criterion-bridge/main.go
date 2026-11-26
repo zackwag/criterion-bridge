@@ -180,7 +180,7 @@ func (g *guide) fetch(ctx context.Context) ([]byte, error) {
 	var body struct {
 		Schedule []scheduleEntry `json:"schedule"`
 	}
-	if err := doJSON(ctx, g.http, http.MethodGet, g.baseURL+"/api/media/"+mediaID+"?fresh=1", nil, &body); err != nil {
+	if _, err := doJSON(ctx, g.http, http.MethodGet, g.baseURL+"/api/media/"+mediaID+"?fresh=1", nil, nil, &body); err != nil {
 		return nil, fmt.Errorf("fetch schedule: %w", err)
 	}
 	if len(body.Schedule) == 0 {
