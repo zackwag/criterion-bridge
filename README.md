@@ -6,21 +6,20 @@ It signs in with **your own Criterion Channel subscription**, the same way crite
 
 ## Running it
 
-From a clone of this repo:
+The image is [`zackwag/criterion-bridge`](https://hub.docker.com/r/zackwag/criterion-bridge) on Docker Hub, for `linux/amd64` and `linux/arm64`. Save [`compose.example.yaml`](compose.example.yaml) as `compose.yaml`, put your sign-in in a `.env` file next to it, and start it:
 
 ```bash
-cp compose.example.yaml compose.yaml
 cat > .env <<'EOF'
 CRITERION_EMAIL=you@example.com
 CRITERION_PASSWORD=your-password
 EOF
-docker compose up -d --build
+docker compose up -d
 ```
 
-To update, pull and rebuild:
+To update:
 
 ```bash
-git pull && docker compose up -d --build
+docker compose pull && docker compose up -d
 ```
 
 | Variable | Description | Default |
