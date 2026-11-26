@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Keeps the workflows' actions current. Add an entry per package
+  # ecosystem the repo uses (gomod, pip, npm, docker, ...).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
