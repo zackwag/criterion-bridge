@@ -6,10 +6,44 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: echo "Replace this with real test steps."
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race -cover ./...
+
+  # The container runs with no network and placeholder credentials, so CI
+  # never contacts Criterion from GitHub's servers. The bridge doesn't sign
+  # in until the first tune, and the in-image healthcheck only uses the
+  # container's own loopback.
+  docker:
+    name: Docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build image
+        run: docker build --build-arg VERSION=ci -t criterion-bridge:ci .
+      - name: Check the container starts with no network and its healthcheck passes
+        run: |
+          docker run -d --name bridge --network none -e CRITERION_EMAIL=ci@example.invalid -e CRITERION_PASSWORD=ci criterion-bridge:ci
+          for _ in $(seq 1 30); do
+            if docker exec bridge /criterion-bridge healthcheck; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec bridge /criterion-bridge healthcheck
+      - name: Logs
+        if: always()
+        run: docker logs bridge || true
