@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/zackwag/criterion-bridge/compare/v0.3.0...v0.4.0) (2026-11-26)
+
+
+### Features
+
+* send each film's full release date ([#11](https://github.com/zackwag/criterion-bridge/issues/11)) ([9510521](https://github.com/zackwag/criterion-bridge/commit/9510521bb2bdee33eac1f58ffbf2e0718c48a8a2))
+
 ## [0.3.0](https://github.com/zackwag/criterion-bridge/compare/v0.2.0...v0.3.0) (2026-11-26)
 
 
