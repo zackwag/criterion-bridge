@@ -41,6 +41,22 @@ var mediaIDPattern = regexp.MustCompile(`^[A-Za-z0-9]{1,32}$`)
 // yearPattern matches a release date that starts with a plausible year.
 var yearPattern = regexp.MustCompile(`^(18|19|20)[0-9]{2}`)
 
+// xmltvDate turns a JW Player release date like 1985-11-27 into XMLTV's
+// 19851127, which Channels DVR stores the way it stores Gracenote's release
+// dates. A date with no valid month and day gives just the year, and one
+// without a plausible year gives nothing.
+func xmltvDate(release string) string {
+	if !yearPattern.MatchString(release) {
+		return ""
+	}
+	if len(release) >= 10 {
+		if d, err := time.Parse(time.DateOnly, release[:10]); err == nil {
+			return d.Format("20060102")
+		}
+	}
+	return release[:4]
+}
+
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
@@ -150,7 +166,7 @@ type guide struct {
 	mu      sync.Mutex
 	fetched time.Time
 	xml     []byte
-	years   map[string]string // release year by media ID; "" when a film has none
+	dates   map[string]string // XMLTV release date by media ID; "" when a film has none
 }
 
 // get returns the XMLTV guide, refetching Criterion's schedule every
@@ -197,24 +213,24 @@ func (g *guide) fetch(ctx context.Context) ([]byte, error) {
 	if len(body.Schedule) == 0 {
 		return nil, errors.New("criterion's schedule was empty")
 	}
-	return xmltv(body.Schedule, g.releaseYears(ctx, body.Schedule))
+	return xmltv(body.Schedule, g.releaseDates(ctx, body.Schedule))
 }
 
-// releaseYears looks up each scheduled film's release year in JW Player's
-// public metadata, a few at a time. A film's year doesn't change, so each is
+// releaseDates looks up each scheduled film's release date in JW Player's
+// public metadata, a few at a time. A film's date doesn't change, so each is
 // looked up once and kept while the film stays on the schedule. A failed
-// lookup leaves that film without a year and is retried next refresh.
-func (g *guide) releaseYears(ctx context.Context, schedule []scheduleEntry) map[string]string {
-	years := map[string]string{}
+// lookup leaves that film without a date and is retried next refresh.
+func (g *guide) releaseDates(ctx context.Context, schedule []scheduleEntry) map[string]string {
+	dates := map[string]string{}
 	var missing []string
 	for _, e := range schedule {
-		if _, seen := years[e.MediaID]; seen || !mediaIDPattern.MatchString(e.MediaID) {
+		if _, seen := dates[e.MediaID]; seen || !mediaIDPattern.MatchString(e.MediaID) {
 			continue
 		}
-		if y, ok := g.years[e.MediaID]; ok {
-			years[e.MediaID] = y
+		if d, ok := g.dates[e.MediaID]; ok {
+			dates[e.MediaID] = d
 		} else {
-			years[e.MediaID] = ""
+			dates[e.MediaID] = ""
 			missing = append(missing, e.MediaID)
 		}
 	}
@@ -233,22 +249,22 @@ func (g *guide) releaseYears(ctx context.Context, schedule []scheduleEntry) map[
 			}
 			if _, err := doJSON(ctx, g.http, http.MethodGet, g.jwURL+"/v2/media/"+id, nil, nil, &body); err != nil {
 				mu.Lock()
-				delete(years, id) // not cached, so it's tried again
+				delete(dates, id) // not cached, so it's tried again
 				mu.Unlock()
 				return
 			}
-			y := ""
-			if len(body.Playlist) > 0 && yearPattern.MatchString(body.Playlist[0].ReleaseDate) {
-				y = body.Playlist[0].ReleaseDate[:4]
+			d := ""
+			if len(body.Playlist) > 0 {
+				d = xmltvDate(body.Playlist[0].ReleaseDate)
 			}
 			mu.Lock()
-			years[id] = y
+			dates[id] = d
 			mu.Unlock()
 		})
 	}
 	wg.Wait()
-	g.years = years
-	return years
+	g.dates = dates
+	return dates
 }
 
 type xmltvIcon struct {
@@ -266,13 +282,13 @@ type xmltvProgramme struct {
 	Channel    string        `xml:"channel,attr"`
 	Title      string        `xml:"title"`
 	Desc       string        `xml:"desc,omitempty"`
-	Date       string        `xml:"date,omitempty"` // release year; Channels shows it instead of the air date
+	Date       string        `xml:"date,omitempty"` // release date; Channels takes the film's year from it
 	Categories []string      `xml:"category"`
 	Icon       *xmltvIcon    `xml:"icon"` // XMLTV puts icon after category and before rating
 	Ratings    []xmltvRating `xml:"rating"`
 }
 
-func xmltv(schedule []scheduleEntry, years map[string]string) ([]byte, error) {
+func xmltv(schedule []scheduleEntry, dates map[string]string) ([]byte, error) {
 	const stamp = "20060102150405 -0700"
 	doc := struct {
 		XMLName   xml.Name `xml:"tv"`
@@ -296,7 +312,7 @@ func xmltv(schedule []scheduleEntry, years map[string]string) ([]byte, error) {
 			Channel: channelID,
 			Title:   e.Title,
 			Desc:    or(e.LongDescription, e.ShortDescription),
-			Date:    years[e.MediaID],
+			Date:    dates[e.MediaID],
 		}
 		// Each film's artwork is its JW Player poster: Criterion's title card
 		// with a still, the director, title and year.

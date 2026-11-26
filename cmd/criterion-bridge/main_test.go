@@ -316,8 +316,8 @@ func TestPlaylistAndGuide(t *testing.T) {
 	if first.Title != "A Short & Sharp Film" || first.Desc != `One "quoted" line.` {
 		t.Errorf("first programme title/desc = %q / %q", first.Title, first.Desc)
 	}
-	if first.Date != "1972" {
-		t.Errorf("first programme date = %q, want the release year 1972", first.Date)
+	if first.Date != "19721230" {
+		t.Errorf("first programme date = %q, want the release date 19721230", first.Date)
 	}
 	if strings.Join(first.Categories, ",") != "Movie" || len(first.Ratings) != 1 || first.Ratings[0].Value != "NR" {
 		t.Errorf("first programme categories/ratings = %v / %v", first.Categories, first.Ratings)
@@ -336,7 +336,7 @@ func TestPlaylistAndGuide(t *testing.T) {
 	}
 }
 
-func TestReleaseYearsAreCachedAndFailuresRetried(t *testing.T) {
+func TestReleaseDatesAreCachedAndFailuresRetried(t *testing.T) {
 	f := &fakeCriterion{password: "right"}
 	upstream := httptest.NewServer(f.handler())
 	t.Cleanup(upstream.Close)
@@ -348,8 +348,8 @@ func TestReleaseYearsAreCachedAndFailuresRetried(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(b), "<date>1972</date>") {
-			t.Fatalf("guide is missing the release year:\n%s", b)
+		if !strings.Contains(string(b), "<date>19721230</date>") {
+			t.Fatalf("guide is missing the release date:\n%s", b)
 		}
 		if !strings.Contains(string(b), "<title>No Metadata</title>") {
 			t.Fatalf("a failed metadata lookup dropped its programme:\n%s", b)
@@ -363,5 +363,21 @@ func TestReleaseYearsAreCachedAndFailuresRetried(t *testing.T) {
 	}
 	if n := f.jwLookups["../evil"]; n != 0 {
 		t.Errorf("a malformed media ID was looked up %d times, want 0", n)
+	}
+}
+
+func TestXMLTVDate(t *testing.T) {
+	for in, want := range map[string]string{
+		"1985-11-27":           "19851127",
+		"1985-11-27T00:00:00Z": "19851127",
+		"1953":                 "1953",
+		"1953-13-40":           "1953", // not a real date, so just the year
+		"0099-01-01":           "",
+		"":                     "",
+		"soon":                 "",
+	} {
+		if got := xmltvDate(in); got != want {
+			t.Errorf("xmltvDate(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
