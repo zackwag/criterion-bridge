@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -165,19 +166,31 @@ func (c *client) attemptSignIn(ctx context.Context) (*http.Client, error) {
 // completeForm submits the post-login form a browser submits on its own. It
 // only does so for a form with nothing to fill in that asks to be submitted
 // straight away; anything else is left for a person.
+//
+// It follows Auth0's forms script (/forms/sdk/forms.js): loading the form
+// returns a signed checkpoint in a response header, each call after that
+// sends the latest checkpoint as a bearer token, and $start returns the next
+// one.
 func completeForm(ctx context.Context, hc *http.Client, prompt *page, id string) (*page, error) {
 	api := prompt.url.Scheme + "://" + prompt.url.Host + "/forms/api/forms/" + url.PathEscape(id)
 	state := prompt.url.Query().Get("state")
+	location := prompt.url.Scheme + "://" + prompt.url.Host + prompt.url.Path
 
 	var def struct {
 		Steps        []json.RawMessage `json:"steps"`
 		HiddenFields []json.RawMessage `json:"hiddenFields"`
 	}
-	if err := doJSON(ctx, hc, http.MethodGet, api+"?"+url.Values{"state": {state}}.Encode(), nil, &def); err != nil {
+	h, err := doJSON(ctx, hc, http.MethodGet, api+"?"+url.Values{"state": {state}}.Encode(),
+		http.Header{"Auth0-Forms-State": {state}, "Auth0-Forms-Location": {location}}, nil, &def)
+	if err != nil {
 		return nil, fmt.Errorf("post-login form: %w", err)
 	}
 	if len(def.Steps) > 0 || len(def.HiddenFields) > 0 {
 		return nil, fmt.Errorf("criterion's post-login form %s now asks for input, which the bridge doesn't fill in: sign in at criterionchannel.com to see it", id)
+	}
+	checkpoint := h.Get("Auth0-Forms-Journey-Checkpoint")
+	if checkpoint == "" {
+		return nil, fmt.Errorf("criterion's post-login form %s came without a checkpoint", id)
 	}
 
 	// The same envelope the form's script sends, describing the bridge as itself.
@@ -185,18 +198,25 @@ func completeForm(ctx context.Context, hc *http.Client, prompt *page, id string)
 		"formData": map[string]any{},
 		"metaData": map[string]any{"navigator": map[string]string{"userAgent": userAgent(), "language": "en-US"}},
 	}
+	signed := func(checkpoint string) http.Header {
+		return http.Header{"Authorization": {"Bearer " + checkpoint}, "Auth0-Forms-Location": {location}}
+	}
 	var start struct {
 		Effect struct {
-			Type string `json:"type"`
+			Type       string `json:"type"`
+			Checkpoint string `json:"checkpoint"`
 		} `json:"effect"`
+		Checkpoint string `json:"checkpoint"`
 	}
-	if err := doJSON(ctx, hc, http.MethodPost, api+"/validations/$start", submission, &start); err != nil {
+	if _, err := doJSON(ctx, hc, http.MethodPost, api+"/validations/$start", signed(checkpoint), submission, &start); err != nil {
 		return nil, fmt.Errorf("post-login form: %w", err)
 	}
 	if start.Effect.Type != "SUBMIT_FORM" {
 		return nil, fmt.Errorf("criterion's post-login form %s didn't ask to be submitted (got %q): sign in at criterionchannel.com to see it", id, start.Effect.Type)
 	}
-	if err := doJSON(ctx, hc, http.MethodPost, api+"/submissions/", submission, nil); err != nil {
+	// The script prefers the checkpoint at the top level, then the effect's.
+	checkpoint = cmp.Or(start.Checkpoint, start.Effect.Checkpoint, checkpoint)
+	if _, err := doJSON(ctx, hc, http.MethodPost, api+"/submissions/", signed(checkpoint), submission, nil); err != nil {
 		return nil, fmt.Errorf("post-login form: %w", err)
 	}
 	p, err := prompt.submit(ctx, hc, url.Values{})
@@ -216,7 +236,7 @@ func (c *client) playback(ctx context.Context) (string, error) {
 			} `json:"sources"`
 		} `json:"playlist"`
 	}
-	if err := doJSON(ctx, c.http, http.MethodGet, c.baseURL+"/api/playback/"+mediaID, nil, &body); err != nil {
+	if _, err := doJSON(ctx, c.http, http.MethodGet, c.baseURL+"/api/playback/"+mediaID, nil, nil, &body); err != nil {
 		return "", err
 	}
 	for _, pl := range body.Playlist {
@@ -278,20 +298,24 @@ func do(ctx context.Context, hc *http.Client, method, u, contentType string, bod
 	return &page{url: resp.Request.URL, body: string(b)}, nil
 }
 
-// doJSON sends in as JSON (when not nil) and decodes a 2xx response into out
-// (when not nil). A 401 or 403 is errUnauthorized.
-func doJSON(ctx context.Context, hc *http.Client, method, u string, in, out any) error {
+// doJSON sends header and in as JSON (each when not nil), decodes a 2xx
+// response into out (when not nil), and returns the response's headers. A
+// 401 or 403 is errUnauthorized. Errors name the path, never the query.
+func doJSON(ctx context.Context, hc *http.Client, method, u string, header http.Header, in, out any) (http.Header, error) {
 	var body io.Reader
 	if in != nil {
 		b, err := json.Marshal(in)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		body = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, u, body)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	for k, v := range header {
+		req.Header[http.CanonicalHeaderKey(k)] = v
 	}
 	req.Header.Set("User-Agent", userAgent())
 	req.Header.Set("Accept", "application/json")
@@ -304,21 +328,21 @@ func doJSON(ctx context.Context, hc *http.Client, method, u string, in, out any)
 		if errors.As(err, &uerr) {
 			err = uerr.Err
 		}
-		return fmt.Errorf("%s %s: %w", method, req.URL.Path, err)
+		return nil, fmt.Errorf("%s %s: %w", method, req.URL.Path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return errUnauthorized
+		return nil, fmt.Errorf("%s %s: %w", method, req.URL.Path, errUnauthorized)
 	case resp.StatusCode/100 != 2:
-		return fmt.Errorf("%s %s: %s", method, req.URL.Path, resp.Status)
+		return nil, fmt.Errorf("%s %s: %s", method, req.URL.Path, resp.Status)
 	case out == nil:
-		return nil
+		return resp.Header, nil
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(out); err != nil {
-		return fmt.Errorf("decode %s: %w", req.URL.Path, err)
+		return nil, fmt.Errorf("decode %s: %w", req.URL.Path, err)
 	}
-	return nil
+	return resp.Header, nil
 }
 
 func userAgent() string {

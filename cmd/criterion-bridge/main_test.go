@@ -65,21 +65,36 @@ func (f *fakeCriterion) handler() http.Handler {
 	mux.HandleFunc("GET /u/custom-prompt/ap_test", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `<input type="hidden" id="custom-form-config" value="{}"/>`)
 	})
+	// The forms API, as Auth0's forms script calls it: loading the form takes
+	// the login state and returns a signed checkpoint in a header, and each
+	// later call has to send the latest checkpoint as a bearer token.
+	location := func(r *http.Request) bool {
+		return r.Header.Get("Auth0-Forms-Location") == "http://"+r.Host+"/u/custom-prompt/ap_test"
+	}
 	mux.HandleFunc("GET /forms/api/forms/ap_test", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("state") != "s3" {
-			http.Error(w, "no state", http.StatusBadRequest)
+		if r.URL.Query().Get("state") != "s3" || r.Header.Get("Auth0-Forms-State") != "s3" || !location(r) {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
+		w.Header().Set("Auth0-Forms-Journey-Checkpoint", "sig_load")
 		steps := "[]"
 		if f.formFields {
 			steps = `[{"id":"step_1"}]`
 		}
 		_, _ = io.WriteString(w, `{"id":"ap_test","steps":`+steps+`,"hiddenFields":[]}`)
 	})
-	mux.HandleFunc("POST /forms/api/forms/ap_test/validations/{step}", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"effect":{"type":"SUBMIT_FORM","checkpoint":"ajc_test"}}`)
+	mux.HandleFunc("POST /forms/api/forms/ap_test/validations/{step}", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sig_load" || !location(r) {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
+		_, _ = io.WriteString(w, `{"effect":{"type":"SUBMIT_FORM","checkpoint":"ajc_test"},"checkpoint":"ajc_test"}`)
 	})
-	mux.HandleFunc("POST /forms/api/forms/ap_test/submissions/", func(_ http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /forms/api/forms/ap_test/submissions/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer ajc_test" || !location(r) {
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			return
+		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
