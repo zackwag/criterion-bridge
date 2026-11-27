@@ -1,8 +1,8 @@
 # criterion-bridge
 
-Serves the [Criterion Channel](https://www.criterionchannel.com/)'s 24/7 live stream to [Channels DVR](https://getchannels.com/) as a custom channel, with a full guide built from Criterion's own schedule.
+Watch the [Criterion Channel](https://www.criterionchannel.com/)'s 24/7 live stream in [Channels DVR](https://getchannels.com/) as a custom channel, with a full guide built from Criterion's own schedule.
 
-It signs in with **your own Criterion Channel subscription**, the same way criterionchannel.com does in a browser, and asks Criterion for the stream each time the channel is tuned. If your subscription ends, it stops working. It doesn't record, download, or strip anything; Channels DVR plays the stream as Criterion serves it.
+It signs in with **your own Criterion Channel subscription**, just like criterionchannel.com does, and asks Criterion for a fresh stream every time you tune in. No subscription, no stream. It doesn't download or alter anything; Channels plays the stream exactly as Criterion serves it.
 
 ## Running it
 
@@ -26,6 +26,7 @@ docker compose pull && docker compose up -d
 |---|---|---|
 | `CRITERION_EMAIL` | Your Criterion Channel email | required |
 | `CRITERION_PASSWORD` | Your Criterion Channel password | required |
+| `TMDB_API_KEY` | A TMDB key, for movie posters instead of title cards ([see below](#portrait-posters)) | none |
 | `CRITERION_BRIDGE_PORT` | The host port, set in `.env` for compose | `8080` |
 | `LISTEN_ADDR` | Where to serve inside the container | `:8080` |
 
@@ -38,7 +39,37 @@ Keep `.env` private. It's gitignored, and the bridge never logs your email or pa
 1. Set **XMLTV Guide Data** to `http://<host>:8080/guide.xml`.
 1. Leave **Prefer channel logos from M3U** selected, so the channel shows Criterion's logo.
 
-The guide covers the next several days of films, with descriptions, genres and ratings, so you can browse and record by film.
+The guide covers the next several days of films, with descriptions, release dates, genres, ratings and artwork, so you can browse and record by film.
+
+## Portrait posters
+
+Out of the box, each film's guide art is Criterion's widescreen title card. If you'd rather have the movie posters Channels DVR shows everywhere else, give the bridge a free TMDB key and it'll look them up.
+
+### Getting a TMDB key
+
+1. Sign in to [TMDB](https://www.themoviedb.org/), or create a free account.
+1. Go to the [developer sign-up](https://www.themoviedb.org/subscribe/developer) and fill in the form. For **Type of Use**, pick **Personal**. For the URL, this repo's is fine.
+1. Once you've agreed to the terms, your key is under [Settings > API](https://www.themoviedb.org/settings/api). Either the **API Key** or the longer **API Read Access Token** works.
+1. Add it to `.env` and restart the bridge:
+
+```bash
+echo 'TMDB_API_KEY=your-key' >> .env
+docker compose up -d
+```
+
+### How posters are picked
+
+The bridge searches TMDB for each film by title and release year and uses the top result. If TMDB doesn't have the film, or Criterion doesn't list a release year to narrow the search, the film keeps its title card. Each film is only looked up once, so expect about 140 searches when the bridge starts and a handful a day after that.
+
+If TMDB rejects the key, the guide keeps working with title cards and the bridge's log says so.
+
+Channels saves a recording's art when you schedule it, so anything scheduled before you added the key keeps the title card. Cancel it and schedule it again from the guide to get the poster.
+
+### Attribution
+
+[![The Movie Database (TMDB)](https://www.themoviedb.org/assets/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg)](https://www.themoviedb.org/)
+
+Posters come from [The Movie Database (TMDB)](https://www.themoviedb.org/). This product uses the TMDB API but is not endorsed or certified by TMDB.
 
 ## How sign-in works
 

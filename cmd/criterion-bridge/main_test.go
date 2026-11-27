@@ -25,6 +25,7 @@ type fakeCriterion struct {
 
 	mu          sync.Mutex
 	jwLookups   map[string]int // JW Player media lookups by ID
+	tmdbQueries map[string]int // TMDB searches by "title|year"
 	passwordHit int
 	signIns     int
 	submissions []map[string]any
@@ -141,9 +142,31 @@ func (f *fakeCriterion) handler() http.Handler {
 		switch id {
 		case "805MwiYh":
 			_, _ = io.WriteString(w, `{"playlist":[{"mediaid":"805MwiYh","release_date":"1972-12-30"}]}`)
+		case "obscure1":
+			_, _ = io.WriteString(w, `{"playlist":[{"mediaid":"obscure1","release_date":"1960-05-01"}]}`)
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
+	})
+	// TMDB's movie search, with key "testkey" or read access token "eyJtest":
+	// one film has a poster, the rest have no results.
+	mux.HandleFunc("GET /3/search/movie", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("api_key") != "testkey" && r.Header.Get("Authorization") != "Bearer eyJtest" {
+			http.Error(w, `{"status_message":"Invalid API key"}`, http.StatusUnauthorized)
+			return
+		}
+		f.mu.Lock()
+		if f.tmdbQueries == nil {
+			f.tmdbQueries = map[string]int{}
+		}
+		f.tmdbQueries[q.Get("query")+"|"+q.Get("year")]++
+		f.mu.Unlock()
+		if q.Get("query") == "A Short & Sharp Film" && q.Get("year") == "1972" {
+			_, _ = io.WriteString(w, `{"results":[{"id":1,"poster_path":"/sharp_Poster-1.jpg"},{"id":2,"poster_path":"/other.jpg"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"results":[]}`)
 	})
 	mux.HandleFunc("GET /api/media/1emmgvqX", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"title":"Criterion 24/7","schedule":[
@@ -151,7 +174,8 @@ func (f *fakeCriterion) handler() http.Handler {
  {"startTime":"2026-11-25T11:06:31Z","endTime":"2026-11-25T12:42:25Z","title":"Tótem","shortDescription":"Film","programType":"Movie","mediaid":"../evil","genres":["Movies","Drama"],"ratings":[]},
  {"startTime":"2026-11-25T12:42:25Z","endTime":"2026-11-25T12:42:25Z","title":"Zero length","programType":"Movie"},
  {"startTime":"2026-11-25T12:42:25Z","endTime":"2026-11-25T14:00:00Z","title":"No Metadata","programType":"Movie","mediaid":"gone0001"},
- {"startTime":"2026-11-25T14:00:00Z","endTime":"2026-11-25T15:30:00Z","title":"A Short & Sharp Film","programType":"Movie","mediaid":"805MwiYh"}
+ {"startTime":"2026-11-25T14:00:00Z","endTime":"2026-11-25T15:30:00Z","title":"A Short & Sharp Film","programType":"Movie","mediaid":"805MwiYh"},
+ {"startTime":"2026-11-25T15:30:00Z","endTime":"2026-11-25T17:00:00Z","title":"Obscure Film","programType":"Movie","mediaid":"obscure1"}
 ]}`)
 	})
 	return mux
@@ -162,7 +186,7 @@ func newBridge(t *testing.T, f *fakeCriterion, password string) (*fakeCriterion,
 	upstream := httptest.NewServer(f.handler())
 	t.Cleanup(upstream.Close)
 	c := &client{baseURL: upstream.URL, email: "me@example.com", password: password, logger: slog.New(slog.DiscardHandler)}
-	g := &guide{http: upstream.Client(), baseURL: upstream.URL, jwURL: upstream.URL}
+	g := &guide{http: upstream.Client(), baseURL: upstream.URL, jwURL: upstream.URL, tmdbURL: upstream.URL}
 	srv := httptest.NewServer(handler(c, g, slog.New(slog.DiscardHandler)))
 	t.Cleanup(srv.Close)
 	return f, c, srv
@@ -306,8 +330,8 @@ func TestPlaylistAndGuide(t *testing.T) {
 	if err := xml.Unmarshal(b, &tv); err != nil {
 		t.Fatalf("guide isn't valid XML: %v\n%s", err, b)
 	}
-	if tv.Channel.ID != channelID || len(tv.Programmes) != 4 {
-		t.Fatalf("guide has channel %q and %d programmes, want %q and 4 (the zero-length one dropped):\n%s", tv.Channel.ID, len(tv.Programmes), channelID, b)
+	if tv.Channel.ID != channelID || len(tv.Programmes) != 5 {
+		t.Fatalf("guide has channel %q and %d programmes, want %q and 5 (the zero-length one dropped):\n%s", tv.Channel.ID, len(tv.Programmes), channelID, b)
 	}
 	first := tv.Programmes[0]
 	if first.Start != "20261125110000 +0000" || first.Stop != "20261125110631 +0000" || first.Channel != channelID {
@@ -340,7 +364,7 @@ func TestReleaseDatesAreCachedAndFailuresRetried(t *testing.T) {
 	f := &fakeCriterion{password: "right"}
 	upstream := httptest.NewServer(f.handler())
 	t.Cleanup(upstream.Close)
-	g := &guide{http: upstream.Client(), baseURL: upstream.URL, jwURL: upstream.URL}
+	g := &guide{http: upstream.Client(), baseURL: upstream.URL, jwURL: upstream.URL, tmdbURL: upstream.URL}
 
 	for range 2 {
 		g.fetched = time.Time{} // force a refetch
@@ -363,6 +387,83 @@ func TestReleaseDatesAreCachedAndFailuresRetried(t *testing.T) {
 	}
 	if n := f.jwLookups["../evil"]; n != 0 {
 		t.Errorf("a malformed media ID was looked up %d times, want 0", n)
+	}
+	if len(f.tmdbQueries) != 0 {
+		t.Errorf("searched TMDB without a key: %v", f.tmdbQueries)
+	}
+}
+
+// guideIcons refreshes the guide and returns each programme's icon by title.
+func guideIcons(t *testing.T, g *guide) map[string]string {
+	t.Helper()
+	g.fetched = time.Time{} // force a refetch
+	b, err := g.get(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tv struct {
+		Programmes []xmltvProgramme `xml:"programme"`
+	}
+	if err := xml.Unmarshal(b, &tv); err != nil {
+		t.Fatal(err)
+	}
+	icons := map[string]string{}
+	for _, p := range tv.Programmes {
+		if p.Icon != nil {
+			icons[p.Title] = p.Icon.Src
+		}
+	}
+	return icons
+}
+
+func TestTMDBPosters(t *testing.T) {
+	for _, key := range []string{"testkey", "eyJtest"} {
+		t.Run(key, func(t *testing.T) {
+			f := &fakeCriterion{password: "right"}
+			upstream := httptest.NewServer(f.handler())
+			t.Cleanup(upstream.Close)
+			g := &guide{http: upstream.Client(), baseURL: upstream.URL, jwURL: upstream.URL, tmdbURL: upstream.URL, tmdbKey: key}
+
+			for range 2 {
+				icons := guideIcons(t, g)
+				if want := tmdbPosterURL + "/sharp_Poster-1.jpg"; icons["A Short & Sharp Film"] != want {
+					t.Errorf("icon = %q, want TMDB's top result %q", icons["A Short & Sharp Film"], want)
+				}
+				if want := "https://cdn.jwplayer.com/v2/media/obscure1/poster.jpg?width=1280"; icons["Obscure Film"] != want {
+					t.Errorf("a film TMDB doesn't have got icon %q, want the JW still", icons["Obscure Film"])
+				}
+				if want := "https://cdn.jwplayer.com/v2/media/gone0001/poster.jpg?width=1280"; icons["No Metadata"] != want {
+					t.Errorf("a film with no release year got icon %q, want the JW still", icons["No Metadata"])
+				}
+			}
+			if n := f.tmdbQueries["A Short & Sharp Film|1972"]; n != 1 {
+				t.Errorf("searched for the film %d times across two refreshes, want 1 (cached)", n)
+			}
+			if n := f.tmdbQueries["Obscure Film|1960"]; n != 1 {
+				t.Errorf("searched for a film with no results %d times, want 1 (no results is an answer)", n)
+			}
+			if len(f.tmdbQueries) != 2 {
+				t.Errorf("TMDB searches = %v, want only the two films with a release year", f.tmdbQueries)
+			}
+		})
+	}
+}
+
+func TestRejectedTMDBKeyKeepsTheStillsAndRetries(t *testing.T) {
+	f := &fakeCriterion{password: "right"}
+	upstream := httptest.NewServer(f.handler())
+	t.Cleanup(upstream.Close)
+	g := &guide{http: upstream.Client(), baseURL: upstream.URL, jwURL: upstream.URL, tmdbURL: upstream.URL, tmdbKey: "wrong"}
+
+	if icons := guideIcons(t, g); icons["A Short & Sharp Film"] != "https://cdn.jwplayer.com/v2/media/805MwiYh/poster.jpg?width=1280" {
+		t.Errorf("icon with a rejected key = %q, want the JW still", icons["A Short & Sharp Film"])
+	}
+	g.tmdbKey = "testkey" // fixed, as after a restart
+	if icons := guideIcons(t, g); icons["A Short & Sharp Film"] != tmdbPosterURL+"/sharp_Poster-1.jpg" {
+		t.Errorf("icon once the key works = %q, want the TMDB poster", icons["A Short & Sharp Film"])
+	}
+	if n := f.jwLookups["805MwiYh"]; n != 1 {
+		t.Errorf("JW Player was asked %d times, want 1: only the TMDB part is retried", n)
 	}
 }
 
