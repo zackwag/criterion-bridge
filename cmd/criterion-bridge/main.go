@@ -33,6 +33,7 @@ import (
 	"os/signal"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -319,14 +320,50 @@ func (g *guide) lookUp(ctx context.Context, schedule []scheduleEntry) map[string
 	return films
 }
 
-// tmdbPoster searches TMDB for a film by its title and release year and
-// returns the top result's portrait poster, or "" if there's none. Without a
-// year it doesn't search, since a title alone too often matches a remake.
+// tmdbPoster searches TMDB for a film's portrait poster and returns "" if
+// there's none. It tries the release year, then a year either side, since
+// Criterion and TMDB sometimes date a film by different releases. Last it
+// tries the title alone, but only trusts a sole match, since a title alone
+// too often matches a remake.
 func (g *guide) tmdbPoster(ctx context.Context, title, date string) (string, error) {
-	if len(date) < 4 || title == "" {
+	title = curlyQuotes.Replace(title)
+	if title == "" {
 		return "", nil
 	}
-	q := url.Values{"query": {title}, "year": {date[:4]}, "include_adult": {"false"}, "language": {"en-US"}}
+	var years []string
+	if len(date) >= 4 {
+		if y, err := strconv.Atoi(date[:4]); err == nil {
+			years = []string{strconv.Itoa(y), strconv.Itoa(y - 1), strconv.Itoa(y + 1)}
+		}
+	}
+	for _, year := range years {
+		results, err := g.tmdbSearch(ctx, title, year)
+		if err != nil || len(results) > 0 {
+			return tmdbPosterOf(results), err
+		}
+	}
+	results, err := g.tmdbSearch(ctx, title, "")
+	if err != nil || len(results) != 1 {
+		return "", err
+	}
+	return tmdbPosterOf(results), nil
+}
+
+// curlyQuotes straightens the typographic quotes in Criterion's titles, which
+// TMDB's search doesn't match.
+var curlyQuotes = strings.NewReplacer("\u2018", "'", "\u2019", "'", "\u201c", `"`, "\u201d", `"`)
+
+type tmdbMovie struct {
+	PosterPath string `json:"poster_path"`
+}
+
+// tmdbSearch runs a TMDB movie search, narrowed to a release year unless year
+// is "".
+func (g *guide) tmdbSearch(ctx context.Context, title, year string) ([]tmdbMovie, error) {
+	q := url.Values{"query": {title}, "include_adult": {"false"}, "language": {"en-US"}}
+	if year != "" {
+		q.Set("year", year)
+	}
 	var header http.Header
 	// A v4 read access token is a JWT, sent as a bearer token; a v3 API key
 	// goes in the query.
@@ -336,20 +373,23 @@ func (g *guide) tmdbPoster(ctx context.Context, title, date string) (string, err
 		q.Set("api_key", g.tmdbKey)
 	}
 	var body struct {
-		Results []struct {
-			PosterPath string `json:"poster_path"`
-		} `json:"results"`
+		Results []tmdbMovie `json:"results"`
 	}
 	if _, err := doJSON(ctx, g.http, http.MethodGet, g.tmdbURL+"/3/search/movie?"+q.Encode(), header, nil, &body); err != nil {
 		if errors.Is(err, errUnauthorized) {
-			return "", errors.New("TMDB rejected TMDB_API_KEY")
+			return nil, errors.New("TMDB rejected TMDB_API_KEY")
 		}
-		return "", err
+		return nil, err
 	}
-	if len(body.Results) == 0 || !posterPathPattern.MatchString(body.Results[0].PosterPath) {
-		return "", nil
+	return body.Results, nil
+}
+
+// tmdbPosterOf returns the top result's poster URL, or "" if it has none.
+func tmdbPosterOf(results []tmdbMovie) string {
+	if len(results) == 0 || !posterPathPattern.MatchString(results[0].PosterPath) {
+		return ""
 	}
-	return tmdbPosterURL + body.Results[0].PosterPath, nil
+	return tmdbPosterURL + results[0].PosterPath
 }
 
 type xmltvIcon struct {

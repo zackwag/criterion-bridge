@@ -59,7 +59,7 @@ docker compose up -d
 
 ### How posters are picked
 
-The bridge searches TMDB for each film by title and release year and uses the top result. If TMDB doesn't have the film, or Criterion doesn't list a release year to narrow the search, the film keeps its title card. Each film is only looked up once, so expect about 140 searches when the bridge starts and a handful a day after that.
+The bridge searches TMDB for each film by title and release year and uses the top result. If that finds nothing, it tries a year either side, since Criterion and TMDB sometimes date a film by different releases. Then it tries the title alone, and uses the result only if it's the sole match, so a remake can't slip in. Anything still unmatched keeps its title card. Each film is only looked up once, so expect about 150 searches when the bridge starts and a handful a day after that.
 
 If TMDB rejects the key, the guide keeps working with title cards and the bridge's log says so.
 
