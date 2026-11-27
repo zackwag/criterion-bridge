@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0](https://github.com/zackwag/criterion-bridge/compare/v0.5.0...v0.6.0) (2026-11-27)
+
+
+### Features
+
+* fall back to nearby years and a sole title match for TMDB posters ([#15](https://github.com/zackwag/criterion-bridge/issues/15)) ([99fbf3d](https://github.com/zackwag/criterion-bridge/commit/99fbf3da090eba3102499d420bf742086a95f9b3))
+
+
+### Bug Fixes
+
+* repair Criterion text that was UTF-8 read as Mac Roman ([#17](https://github.com/zackwag/criterion-bridge/issues/17)) ([ae7af31](https://github.com/zackwag/criterion-bridge/commit/ae7af3178527343bbcac20c897a3f180deb8b78e))
+
 ## [0.5.0](https://github.com/zackwag/criterion-bridge/compare/v0.4.0...v0.5.0) (2026-11-27)
 
 
