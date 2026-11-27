@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -130,7 +131,8 @@ func (f *fakeCriterion) handler() http.Handler {
 		}
 		_, _ = io.WriteString(w, `{"playlist":[{"mediaid":"1emmgvqX","sources":[{"file":"https://stream.example/live/index.mpd","type":"application/dash+xml"},{"file":"`+fakeStream+`","type":"application/vnd.apple.mpegurl"}]}]}`)
 	})
-	// JW Player's media API: one film has a release date, one fails.
+	// JW Player's media API: two films have a release date, one fails, and
+	// the rest aren't found.
 	mux.HandleFunc("GET /v2/media/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		f.mu.Lock()
@@ -144,12 +146,14 @@ func (f *fakeCriterion) handler() http.Handler {
 			_, _ = io.WriteString(w, `{"playlist":[{"mediaid":"805MwiYh","release_date":"1972-12-30"}]}`)
 		case "obscure1":
 			_, _ = io.WriteString(w, `{"playlist":[{"mediaid":"obscure1","release_date":"1960-05-01"}]}`)
+		case "gone0001":
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
 	})
 	// TMDB's movie search, with key "testkey" or read access token "eyJtest":
-	// one film has a poster, the rest have no results.
+	// the searches below have results, the rest have none.
 	mux.HandleFunc("GET /3/search/movie", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("api_key") != "testkey" && r.Header.Get("Authorization") != "Bearer eyJtest" {
@@ -162,11 +166,18 @@ func (f *fakeCriterion) handler() http.Handler {
 		}
 		f.tmdbQueries[q.Get("query")+"|"+q.Get("year")]++
 		f.mu.Unlock()
-		if q.Get("query") == "A Short & Sharp Film" && q.Get("year") == "1972" {
-			_, _ = io.WriteString(w, `{"results":[{"id":1,"poster_path":"/sharp_Poster-1.jpg"},{"id":2,"poster_path":"/other.jpg"}]}`)
-			return
+		results, ok := map[string]string{
+			"A Short & Sharp Film|1972": `{"id":1,"poster_path":"/sharp_Poster-1.jpg"},{"id":2,"poster_path":"/other.jpg"}`,
+			"Dated a Year Late|1985":    `{"id":3,"poster_path":"/late.jpg"}`,
+			"Heaven's Gate|":            `{"id":4,"poster_path":"/gate.jpg"}`,
+			"Remade|":                   `{"id":5,"poster_path":"/original.jpg"},{"id":6,"poster_path":"/remake.jpg"}`,
+			"No Poster|1990":            `{"id":7,"poster_path":null}`,
+			"Unlisted|":                 `{"id":8,"poster_path":"/unlisted.jpg"}`,
+		}[q.Get("query")+"|"+q.Get("year")]
+		if !ok {
+			results = ""
 		}
-		_, _ = io.WriteString(w, `{"results":[]}`)
+		_, _ = io.WriteString(w, `{"results":[`+results+`]}`)
 	})
 	mux.HandleFunc("GET /api/media/1emmgvqX", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, `{"title":"Criterion 24/7","schedule":[
@@ -175,7 +186,8 @@ func (f *fakeCriterion) handler() http.Handler {
  {"startTime":"2026-11-25T12:42:25Z","endTime":"2026-11-25T12:42:25Z","title":"Zero length","programType":"Movie"},
  {"startTime":"2026-11-25T12:42:25Z","endTime":"2026-11-25T14:00:00Z","title":"No Metadata","programType":"Movie","mediaid":"gone0001"},
  {"startTime":"2026-11-25T14:00:00Z","endTime":"2026-11-25T15:30:00Z","title":"A Short & Sharp Film","programType":"Movie","mediaid":"805MwiYh"},
- {"startTime":"2026-11-25T15:30:00Z","endTime":"2026-11-25T17:00:00Z","title":"Obscure Film","programType":"Movie","mediaid":"obscure1"}
+ {"startTime":"2026-11-25T15:30:00Z","endTime":"2026-11-25T17:00:00Z","title":"Obscure Film","programType":"Movie","mediaid":"obscure1"},
+ {"startTime":"2026-11-25T17:00:00Z","endTime":"2026-11-25T18:30:00Z","title":"Unlisted","programType":"Movie","mediaid":"unlisted"}
 ]}`)
 	})
 	return mux
@@ -330,8 +342,8 @@ func TestPlaylistAndGuide(t *testing.T) {
 	if err := xml.Unmarshal(b, &tv); err != nil {
 		t.Fatalf("guide isn't valid XML: %v\n%s", err, b)
 	}
-	if tv.Channel.ID != channelID || len(tv.Programmes) != 5 {
-		t.Fatalf("guide has channel %q and %d programmes, want %q and 5 (the zero-length one dropped):\n%s", tv.Channel.ID, len(tv.Programmes), channelID, b)
+	if tv.Channel.ID != channelID || len(tv.Programmes) != 6 {
+		t.Fatalf("guide has channel %q and %d programmes, want %q and 6 (the zero-length one dropped):\n%s", tv.Channel.ID, len(tv.Programmes), channelID, b)
 	}
 	first := tv.Programmes[0]
 	if first.Start != "20261125110000 +0000" || first.Stop != "20261125110631 +0000" || first.Channel != channelID {
@@ -385,6 +397,9 @@ func TestReleaseDatesAreCachedAndFailuresRetried(t *testing.T) {
 	if n := f.jwLookups["gone0001"]; n != 2 {
 		t.Errorf("gone0001 was looked up %d times across two refreshes, want 2 (a failure isn't cached)", n)
 	}
+	if n := f.jwLookups["unlisted"]; n != 1 {
+		t.Errorf("unlisted was looked up %d times across two refreshes, want 1 (a 404 is cached)", n)
+	}
 	if n := f.jwLookups["../evil"]; n != 0 {
 		t.Errorf("a malformed media ID was looked up %d times, want 0", n)
 	}
@@ -433,17 +448,64 @@ func TestTMDBPosters(t *testing.T) {
 					t.Errorf("a film TMDB doesn't have got icon %q, want the JW still", icons["Obscure Film"])
 				}
 				if want := "https://cdn.jwplayer.com/v2/media/gone0001/poster.jpg?width=1280"; icons["No Metadata"] != want {
-					t.Errorf("a film with no release year got icon %q, want the JW still", icons["No Metadata"])
+					t.Errorf("a film whose metadata lookup failed got icon %q, want the JW still", icons["No Metadata"])
+				}
+				if want := tmdbPosterURL + "/unlisted.jpg"; icons["Unlisted"] != want {
+					t.Errorf("a film JW Player has no metadata for got icon %q, want TMDB's sole title match %q", icons["Unlisted"], want)
 				}
 			}
-			if n := f.tmdbQueries["A Short & Sharp Film|1972"]; n != 1 {
-				t.Errorf("searched for the film %d times across two refreshes, want 1 (cached)", n)
+			want := map[string]int{
+				"A Short & Sharp Film|1972": 1,
+				// no results is an answer too, so these aren't repeated
+				"Obscure Film|1960": 1, "Obscure Film|1959": 1, "Obscure Film|1961": 1, "Obscure Film|": 1,
+				// JW Player has no metadata for it, so only the title is searched
+				"Unlisted|": 1,
 			}
-			if n := f.tmdbQueries["Obscure Film|1960"]; n != 1 {
-				t.Errorf("searched for a film with no results %d times, want 1 (no results is an answer)", n)
+			if !maps.Equal(f.tmdbQueries, want) {
+				t.Errorf("TMDB searches across two refreshes = %v, want %v", f.tmdbQueries, want)
 			}
-			if len(f.tmdbQueries) != 2 {
-				t.Errorf("TMDB searches = %v, want only the two films with a release year", f.tmdbQueries)
+		})
+	}
+}
+
+func TestTMDBPosterFallbacks(t *testing.T) {
+	f := &fakeCriterion{password: "right"}
+	upstream := httptest.NewServer(f.handler())
+	t.Cleanup(upstream.Close)
+	g := &guide{http: upstream.Client(), tmdbURL: upstream.URL, tmdbKey: "testkey"}
+
+	for _, tc := range []struct {
+		title, date, want string
+		searches          []string
+	}{
+		{"A Short & Sharp Film", "19720101", "/sharp_Poster-1.jpg", []string{"1972"}},
+		{"Dated a Year Late", "19860101", "/late.jpg", []string{"1986", "1985"}},
+		{"Heaven\u2019s Gate", "20200101", "/gate.jpg", []string{"2020", "2019", "2021", ""}},
+		{"Heaven\u2019s Gate", "", "/gate.jpg", []string{""}},
+		{"Remade", "19500101", "", []string{"1950", "1949", "1951", ""}},
+		{"No Poster", "19900101", "", []string{"1990"}},
+		{"", "19900101", "", nil},
+	} {
+		t.Run(tc.title+"|"+tc.date, func(t *testing.T) {
+			f.tmdbQueries = nil
+			got, err := g.tmdbPoster(t.Context(), tc.title, tc.date)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := ""
+			if tc.want != "" {
+				want = tmdbPosterURL + tc.want
+			}
+			if got != want {
+				t.Errorf("poster = %q, want %q", got, want)
+			}
+			title := strings.ReplaceAll(tc.title, "\u2019", "'")
+			wantQueries := map[string]int{}
+			for _, y := range tc.searches {
+				wantQueries[title+"|"+y] = 1
+			}
+			if !maps.Equal(f.tmdbQueries, wantQueries) {
+				t.Errorf("searches = %v, want %v", f.tmdbQueries, wantQueries)
 			}
 		})
 	}
