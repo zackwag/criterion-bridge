@@ -529,6 +529,24 @@ func TestRejectedTMDBKeyKeepsTheStillsAndRetries(t *testing.T) {
 	}
 }
 
+func TestFixMojibake(t *testing.T) {
+	for in, want := range map[string]string{
+		"Heaven\u201a\u00c4\u00f4s Crossroad":              "Heaven\u2019s Crossroad", // ’ read as Mac Roman
+		"\u201a\u00c4\u00faQuoted\u201a\u00c4\u00f9":       "\u201cQuoted\u201d",
+		"Caf\u221a\u00a9 \u00ac\u00a7":                     "Caf\u00e9 \u00a4", // é and ¤
+		"T\u00f3tem":                                       "T\u00f3tem",
+		"Andr\u00e9 Gr\u00e9goire, \u0218tefan":            "Andr\u00e9 Gr\u00e9goire, \u0218tefan",
+		"It\u2019s \u201cfine\u201d\u2014really \u2013 ok": "It\u2019s \u201cfine\u201d\u2014really \u2013 ok",
+		"\u00d8stergaard and Ko\u0161\u2019s":              "\u00d8stergaard and Ko\u0161\u2019s",
+		"plain ASCII":                                      "plain ASCII",
+		"":                                                 "",
+	} {
+		if got := fixMojibake(in); got != want {
+			t.Errorf("fixMojibake(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestXMLTVDate(t *testing.T) {
 	for in, want := range map[string]string{
 		"1985-11-27":           "19851127",

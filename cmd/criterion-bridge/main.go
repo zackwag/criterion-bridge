@@ -38,6 +38,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 // mediaIDPattern matches a JW Player media ID, which goes into an image URL.
@@ -245,7 +246,49 @@ func (g *guide) fetch(ctx context.Context) ([]byte, error) {
 	if len(body.Schedule) == 0 {
 		return nil, errors.New("criterion's schedule was empty")
 	}
+	for i := range body.Schedule {
+		e := &body.Schedule[i]
+		e.Title, e.ShortDescription, e.LongDescription = fixMojibake(e.Title), fixMojibake(e.ShortDescription), fixMojibake(e.LongDescription)
+	}
 	return xmltv(body.Schedule, g.lookUp(ctx, body.Schedule))
+}
+
+// macRoman is the upper half of Mac Roman, bytes 0x80 to 0xFF.
+const macRoman = "ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©™´¨≠ÆØ∞±≤≥¥µ∂∑∏π∫ªºΩæø¿¡¬√ƒ≈∆«»…\u00a0ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰ÂÊÁËÈÍÎÏÌÓÔ\uf8ffÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ"
+
+// macRomanByte maps each character in macRoman back to its byte.
+var macRomanByte = func() map[rune]byte {
+	m := map[rune]byte{}
+	b := byte(0x80)
+	for _, r := range macRoman {
+		m[r] = b
+		b++
+	}
+	return m
+}()
+
+var nonASCII = regexp.MustCompile(`[^\x00-\x7F]+`)
+
+// fixMojibake repairs text that was UTF-8 but got read as Mac Roman, like
+// Criterion's "Heaven‚Äôs Crossroad". It maps each run of non-ASCII
+// characters back to Mac Roman bytes and keeps the result only if those bytes
+// are valid UTF-8, which accented letters and real typographic punctuation
+// never are.
+func fixMojibake(s string) string {
+	return nonASCII.ReplaceAllStringFunc(s, func(run string) string {
+		b := make([]byte, 0, len(run))
+		for _, r := range run {
+			c, ok := macRomanByte[r]
+			if !ok {
+				return run
+			}
+			b = append(b, c)
+		}
+		if !utf8.Valid(b) {
+			return run
+		}
+		return string(b)
+	})
 }
 
 // lookUp finds each scheduled film's release date in JW Player's public
