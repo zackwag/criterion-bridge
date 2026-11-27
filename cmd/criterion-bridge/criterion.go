@@ -33,6 +33,9 @@ var errBadCredentials = errors.New("sign-in rejected: check CRITERION_EMAIL and 
 
 var errUnauthorized = errors.New("criterion answered 401")
 
+// errNotFound is doJSON's error for a 404.
+var errNotFound = errors.New("404 Not Found")
+
 var stateField = regexp.MustCompile(`name="state"[^>]*?value="([^"]*)"`)
 
 // client signs in to the Criterion Channel with the subscriber's own account
@@ -334,6 +337,8 @@ func doJSON(ctx context.Context, hc *http.Client, method, u string, header http.
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return nil, fmt.Errorf("%s %s: %w", method, req.URL.Path, errUnauthorized)
+	case resp.StatusCode == http.StatusNotFound:
+		return nil, fmt.Errorf("%s %s: %w", method, req.URL.Path, errNotFound)
 	case resp.StatusCode/100 != 2:
 		return nil, fmt.Errorf("%s %s: %s", method, req.URL.Path, resp.Status)
 	case out == nil:

@@ -289,8 +289,11 @@ func (g *guide) lookUp(ctx context.Context, schedule []scheduleEntry) map[string
 						ReleaseDate string `json:"release_date"`
 					} `json:"playlist"`
 				}
-				if _, err := doJSON(ctx, g.http, http.MethodGet, g.jwURL+"/v2/media/"+id, nil, nil, &body); err != nil {
-					return // not cached, so it's tried again
+				// A 404 means JW Player has no metadata for the film, so it's
+				// kept with no date; any other error isn't cached, so it's
+				// tried again.
+				if _, err := doJSON(ctx, g.http, http.MethodGet, g.jwURL+"/v2/media/"+id, nil, nil, &body); err != nil && !errors.Is(err, errNotFound) {
+					return
 				}
 				if len(body.Playlist) > 0 {
 					f.date = xmltvDate(body.Playlist[0].ReleaseDate)
