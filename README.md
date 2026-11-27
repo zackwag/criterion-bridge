@@ -1,8 +1,8 @@
 # criterion-bridge
 
-Serves the [Criterion Channel](https://www.criterionchannel.com/)'s 24/7 live stream to [Channels DVR](https://getchannels.com/) as a custom channel, with a full guide built from Criterion's own schedule.
+Watch the [Criterion Channel](https://www.criterionchannel.com/)'s 24/7 live stream in [Channels DVR](https://getchannels.com/) as a custom channel, with a full guide built from Criterion's own schedule.
 
-It signs in with **your own Criterion Channel subscription**, the same way criterionchannel.com does in a browser, and asks Criterion for the stream each time the channel is tuned. If your subscription ends, it stops working. It doesn't record, download, or strip anything; Channels DVR plays the stream as Criterion serves it.
+It signs in with **your own Criterion Channel subscription**, just like criterionchannel.com does, and asks Criterion for a fresh stream every time you tune in. No subscription, no stream. It doesn't download or alter anything; Channels plays the stream exactly as Criterion serves it.
 
 ## Running it
 
