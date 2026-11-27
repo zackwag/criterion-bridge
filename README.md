@@ -26,6 +26,7 @@ docker compose pull && docker compose up -d
 |---|---|---|
 | `CRITERION_EMAIL` | Your Criterion Channel email | required |
 | `CRITERION_PASSWORD` | Your Criterion Channel password | required |
+| `TMDB_API_KEY` | A TMDB API key or read access token, for portrait posters (see below) | none |
 | `CRITERION_BRIDGE_PORT` | The host port, set in `.env` for compose | `8080` |
 | `LISTEN_ADDR` | Where to serve inside the container | `:8080` |
 
@@ -38,7 +39,15 @@ Keep `.env` private. It's gitignored, and the bridge never logs your email or pa
 1. Set **XMLTV Guide Data** to `http://<host>:8080/guide.xml`.
 1. Leave **Prefer channel logos from M3U** selected, so the channel shows Criterion's logo.
 
-The guide covers the next several days of films, with descriptions, genres and ratings, so you can browse and record by film.
+The guide covers the next several days of films, with descriptions, release dates, genres, ratings and artwork, so you can browse and record by film.
+
+## Portrait posters
+
+Criterion's own artwork for each film is a widescreen title card. To get the portrait posters Channels DVR shows for other movies, set `TMDB_API_KEY` to a free [TMDB API key](https://www.themoviedb.org/settings/api) (the API key or the read access token both work). The bridge then searches TMDB for each film by its title and release year and uses the top result's poster, keeping Criterion's title card for any film TMDB doesn't have. It looks each film up once: about 140 searches when it starts, then only the films Criterion adds to the schedule.
+
+Channels saves a recording's artwork when you schedule it, so recordings scheduled before you set the key keep the title card. Schedule them again from the guide to pick up the poster.
+
+This product uses the TMDB API but is not endorsed or certified by TMDB.
 
 ## How sign-in works
 

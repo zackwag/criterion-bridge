@@ -10,3 +10,5 @@ services:
       # Your Criterion Channel sign-in, from .env next to this file.
       - CRITERION_EMAIL=${CRITERION_EMAIL}
       - CRITERION_PASSWORD=${CRITERION_PASSWORD}
+      # Optional: a TMDB API key, for portrait posters in the guide.
+      - TMDB_API_KEY=${TMDB_API_KEY:-}

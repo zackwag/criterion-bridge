@@ -10,6 +10,8 @@
 //
 //	CRITERION_EMAIL     your Criterion Channel email (required)
 //	CRITERION_PASSWORD  your Criterion Channel password (required)
+//	TMDB_API_KEY        a TMDB API key or read access token, for portrait
+//	                    posters (optional)
 //	LISTEN_ADDR         where to serve (default :8080)
 //
 // "criterion-bridge healthcheck" checks a running instance's /healthz, for
@@ -17,6 +19,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/xml"
 	"errors"
@@ -25,6 +28,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"regexp"
@@ -37,6 +41,9 @@ import (
 
 // mediaIDPattern matches a JW Player media ID, which goes into an image URL.
 var mediaIDPattern = regexp.MustCompile(`^[A-Za-z0-9]{1,32}$`)
+
+// posterPathPattern matches a TMDB poster path, which goes into an image URL.
+var posterPathPattern = regexp.MustCompile(`^/[A-Za-z0-9_-]{1,64}\.(jpg|png)$`)
 
 // yearPattern matches a release date that starts with a plausible year.
 var yearPattern = regexp.MustCompile(`^(18|19|20)[0-9]{2}`)
@@ -70,6 +77,10 @@ const (
 	// "C". The stream's JW Player poster is only a generic film-strip image.
 	channelLogo = criterionURL + "/apple-icon.png"
 	jwPlayerURL = "https://cdn.jwplayer.com"
+	tmdbURL     = "https://api.themoviedb.org"
+	// tmdbPosterURL is the base for TMDB posters 780 pixels wide, the size
+	// Channels DVR uses for its own TMDB posters.
+	tmdbPosterURL = "https://image.tmdb.org/t/p/w780"
 	// guideFor is how long a fetched schedule is reused.
 	guideFor = time.Hour
 )
@@ -94,7 +105,14 @@ func run(logger *slog.Logger) error {
 	listenAddr := or(os.Getenv("LISTEN_ADDR"), ":8080")
 
 	c := &client{baseURL: criterionURL, email: email, password: password, logger: logger}
-	g := &guide{http: &http.Client{Timeout: 30 * time.Second}, baseURL: criterionURL, jwURL: jwPlayerURL}
+	g := &guide{
+		http:    &http.Client{Timeout: 30 * time.Second},
+		logger:  logger,
+		baseURL: criterionURL,
+		jwURL:   jwPlayerURL,
+		tmdbURL: tmdbURL,
+		tmdbKey: strings.TrimSpace(os.Getenv("TMDB_API_KEY")),
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -160,13 +178,26 @@ func handler(c *client, g *guide, logger *slog.Logger) http.Handler {
 
 type guide struct {
 	http    *http.Client
+	logger  *slog.Logger
 	baseURL string
 	jwURL   string // JW Player's media API, which has each film's release date
+	tmdbURL string // TMDB's API, for portrait posters
+	tmdbKey string // a TMDB API key or read access token; "" skips TMDB
 
 	mu      sync.Mutex
 	fetched time.Time
 	xml     []byte
-	dates   map[string]string // XMLTV release date by media ID; "" when a film has none
+	films   map[string]film // by media ID
+}
+
+// film is what's looked up about a scheduled film beyond Criterion's
+// schedule.
+type film struct {
+	date   string // XMLTV release date; "" when the film has none
+	poster string // TMDB portrait poster URL; "" when there's none
+	// searched is true once TMDB has answered for the film, whether or not it
+	// had a poster, so it isn't asked again.
+	searched bool
 }
 
 // get returns the XMLTV guide, refetching Criterion's schedule every
@@ -213,58 +244,112 @@ func (g *guide) fetch(ctx context.Context) ([]byte, error) {
 	if len(body.Schedule) == 0 {
 		return nil, errors.New("criterion's schedule was empty")
 	}
-	return xmltv(body.Schedule, g.releaseDates(ctx, body.Schedule))
+	return xmltv(body.Schedule, g.lookUp(ctx, body.Schedule))
 }
 
-// releaseDates looks up each scheduled film's release date in JW Player's
-// public metadata, a few at a time. A film's date doesn't change, so each is
-// looked up once and kept while the film stays on the schedule. A failed
-// lookup leaves that film without a date and is retried next refresh.
-func (g *guide) releaseDates(ctx context.Context, schedule []scheduleEntry) map[string]string {
-	dates := map[string]string{}
-	var missing []string
+// lookUp finds each scheduled film's release date in JW Player's public
+// metadata and, with a TMDB key, its portrait poster on TMDB, a few films at a
+// time. Neither changes, so each film is looked up once and kept while it
+// stays on the schedule. A failed lookup leaves that film without the missing
+// details and is retried next refresh.
+func (g *guide) lookUp(ctx context.Context, schedule []scheduleEntry) map[string]film {
+	films := map[string]film{}
+	titles := map[string]string{}
+	var todo []string
 	for _, e := range schedule {
-		if _, seen := dates[e.MediaID]; seen || !mediaIDPattern.MatchString(e.MediaID) {
+		if _, seen := titles[e.MediaID]; seen || !mediaIDPattern.MatchString(e.MediaID) {
 			continue
 		}
-		if d, ok := g.dates[e.MediaID]; ok {
-			dates[e.MediaID] = d
-		} else {
-			dates[e.MediaID] = ""
-			missing = append(missing, e.MediaID)
+		titles[e.MediaID] = e.Title
+		f, known := g.films[e.MediaID]
+		if known {
+			films[e.MediaID] = f
+		}
+		if !known || (g.tmdbKey != "" && !f.searched) {
+			todo = append(todo, e.MediaID)
 		}
 	}
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	var tmdbFailed int
+	var tmdbErr error
 	slots := make(chan struct{}, 8)
-	for _, id := range missing {
+	for _, id := range todo {
 		wg.Go(func() {
 			slots <- struct{}{}
 			defer func() { <-slots }()
-			var body struct {
-				Playlist []struct {
-					ReleaseDate string `json:"release_date"`
-				} `json:"playlist"`
+			mu.Lock()
+			f, known := films[id]
+			mu.Unlock()
+			if !known {
+				var body struct {
+					Playlist []struct {
+						ReleaseDate string `json:"release_date"`
+					} `json:"playlist"`
+				}
+				if _, err := doJSON(ctx, g.http, http.MethodGet, g.jwURL+"/v2/media/"+id, nil, nil, &body); err != nil {
+					return // not cached, so it's tried again
+				}
+				if len(body.Playlist) > 0 {
+					f.date = xmltvDate(body.Playlist[0].ReleaseDate)
+				}
 			}
-			if _, err := doJSON(ctx, g.http, http.MethodGet, g.jwURL+"/v2/media/"+id, nil, nil, &body); err != nil {
-				mu.Lock()
-				delete(dates, id) // not cached, so it's tried again
-				mu.Unlock()
-				return
-			}
-			d := ""
-			if len(body.Playlist) > 0 {
-				d = xmltvDate(body.Playlist[0].ReleaseDate)
+			if g.tmdbKey != "" && !f.searched {
+				poster, err := g.tmdbPoster(ctx, titles[id], f.date)
+				if err != nil {
+					mu.Lock()
+					tmdbFailed++
+					tmdbErr = cmp.Or(tmdbErr, err)
+					mu.Unlock()
+				} else {
+					f.poster, f.searched = poster, true
+				}
 			}
 			mu.Lock()
-			dates[id] = d
+			films[id] = f
 			mu.Unlock()
 		})
 	}
 	wg.Wait()
-	g.dates = dates
-	return dates
+	if tmdbFailed > 0 && g.logger != nil {
+		g.logger.Warn("TMDB poster lookups failed; those films keep Criterion's still until the next refresh", "count", tmdbFailed, "err", tmdbErr)
+	}
+	g.films = films
+	return films
+}
+
+// tmdbPoster searches TMDB for a film by its title and release year and
+// returns the top result's portrait poster, or "" if there's none. Without a
+// year it doesn't search, since a title alone too often matches a remake.
+func (g *guide) tmdbPoster(ctx context.Context, title, date string) (string, error) {
+	if len(date) < 4 || title == "" {
+		return "", nil
+	}
+	q := url.Values{"query": {title}, "year": {date[:4]}, "include_adult": {"false"}, "language": {"en-US"}}
+	var header http.Header
+	// A v4 read access token is a JWT, sent as a bearer token; a v3 API key
+	// goes in the query.
+	if strings.HasPrefix(g.tmdbKey, "eyJ") {
+		header = http.Header{"Authorization": {"Bearer " + g.tmdbKey}}
+	} else {
+		q.Set("api_key", g.tmdbKey)
+	}
+	var body struct {
+		Results []struct {
+			PosterPath string `json:"poster_path"`
+		} `json:"results"`
+	}
+	if _, err := doJSON(ctx, g.http, http.MethodGet, g.tmdbURL+"/3/search/movie?"+q.Encode(), header, nil, &body); err != nil {
+		if errors.Is(err, errUnauthorized) {
+			return "", errors.New("TMDB rejected TMDB_API_KEY")
+		}
+		return "", err
+	}
+	if len(body.Results) == 0 || !posterPathPattern.MatchString(body.Results[0].PosterPath) {
+		return "", nil
+	}
+	return tmdbPosterURL + body.Results[0].PosterPath, nil
 }
 
 type xmltvIcon struct {
@@ -288,7 +373,7 @@ type xmltvProgramme struct {
 	Ratings    []xmltvRating `xml:"rating"`
 }
 
-func xmltv(schedule []scheduleEntry, dates map[string]string) ([]byte, error) {
+func xmltv(schedule []scheduleEntry, films map[string]film) ([]byte, error) {
 	const stamp = "20060102150405 -0700"
 	doc := struct {
 		XMLName   xml.Name `xml:"tv"`
@@ -312,11 +397,15 @@ func xmltv(schedule []scheduleEntry, dates map[string]string) ([]byte, error) {
 			Channel: channelID,
 			Title:   e.Title,
 			Desc:    or(e.LongDescription, e.ShortDescription),
-			Date:    dates[e.MediaID],
+			Date:    films[e.MediaID].date,
 		}
-		// Each film's artwork is its JW Player poster: Criterion's title card
-		// with a still, the director, title and year.
-		if mediaIDPattern.MatchString(e.MediaID) {
+		// Each film's artwork is its TMDB portrait poster when there is one,
+		// or else its JW Player poster: Criterion's widescreen title card with
+		// a still, the director, title and year.
+		switch {
+		case films[e.MediaID].poster != "":
+			p.Icon = &xmltvIcon{films[e.MediaID].poster}
+		case mediaIDPattern.MatchString(e.MediaID):
 			p.Icon = &xmltvIcon{jwPlayerURL + "/v2/media/" + e.MediaID + "/poster.jpg?width=1280"}
 		}
 		// Channels DVR treats a "Movie" category as a film. Criterion's
