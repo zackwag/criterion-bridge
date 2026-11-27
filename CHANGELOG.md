@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/zackwag/criterion-bridge/compare/v0.4.0...v0.5.0) (2026-11-27)
+
+
+### Features
+
+* portrait posters from TMDB with an optional TMDB_API_KEY ([#13](https://github.com/zackwag/criterion-bridge/issues/13)) ([c077d72](https://github.com/zackwag/criterion-bridge/commit/c077d72eabe0355253131fd7c605a122221bc4eb))
+
 ## [0.4.0](https://github.com/zackwag/criterion-bridge/compare/v0.3.0...v0.4.0) (2026-11-26)
 
 
