@@ -26,7 +26,7 @@ docker compose pull && docker compose up -d
 |---|---|---|
 | `CRITERION_EMAIL` | Your Criterion Channel email | required |
 | `CRITERION_PASSWORD` | Your Criterion Channel password | required |
-| `TMDB_API_KEY` | A TMDB API key or read access token, for portrait posters (see below) | none |
+| `TMDB_API_KEY` | A TMDB key, for movie posters instead of title cards ([see below](#portrait-posters)) | none |
 | `CRITERION_BRIDGE_PORT` | The host port, set in `.env` for compose | `8080` |
 | `LISTEN_ADDR` | Where to serve inside the container | `:8080` |
 
@@ -43,11 +43,33 @@ The guide covers the next several days of films, with descriptions, release date
 
 ## Portrait posters
 
-Criterion's own artwork for each film is a widescreen title card. To get the portrait posters Channels DVR shows for other movies, set `TMDB_API_KEY` to a free [TMDB API key](https://www.themoviedb.org/settings/api) (the API key or the read access token both work). The bridge then searches TMDB for each film by its title and release year and uses the top result's poster, keeping Criterion's title card for any film TMDB doesn't have. It looks each film up once: about 140 searches when it starts, then only the films Criterion adds to the schedule.
+Out of the box, each film's guide art is Criterion's widescreen title card. If you'd rather have the movie posters Channels DVR shows everywhere else, give the bridge a free TMDB key and it'll look them up.
 
-Channels saves a recording's artwork when you schedule it, so recordings scheduled before you set the key keep the title card. Schedule them again from the guide to pick up the poster.
+### Getting a TMDB key
 
-This product uses the TMDB API but is not endorsed or certified by TMDB.
+1. Sign in to [TMDB](https://www.themoviedb.org/), or create a free account.
+1. Go to the [developer sign-up](https://www.themoviedb.org/subscribe/developer) and fill in the form. For **Type of Use**, pick **Personal**. For the URL, this repo's is fine.
+1. Once you've agreed to the terms, your key is under [Settings > API](https://www.themoviedb.org/settings/api). Either the **API Key** or the longer **API Read Access Token** works.
+1. Add it to `.env` and restart the bridge:
+
+```bash
+echo 'TMDB_API_KEY=your-key' >> .env
+docker compose up -d
+```
+
+### How posters are picked
+
+The bridge searches TMDB for each film by title and release year and uses the top result. If TMDB doesn't have the film, or Criterion doesn't list a release year to narrow the search, the film keeps its title card. Each film is only looked up once, so expect about 140 searches when the bridge starts and a handful a day after that.
+
+If TMDB rejects the key, the guide keeps working with title cards and the bridge's log says so.
+
+Channels saves a recording's art when you schedule it, so anything scheduled before you added the key keeps the title card. Cancel it and schedule it again from the guide to get the poster.
+
+### Attribution
+
+[![The Movie Database (TMDB)](https://www.themoviedb.org/assets/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg)](https://www.themoviedb.org/)
+
+Posters come from [The Movie Database (TMDB)](https://www.themoviedb.org/). This product uses the TMDB API but is not endorsed or certified by TMDB.
 
 ## How sign-in works
 
